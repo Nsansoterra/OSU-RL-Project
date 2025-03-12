@@ -184,7 +184,24 @@ while True:
         fps = 30  # Frames per second
         out = cv2.VideoWriter(video_filename, fourcc, fps, (frame_width, frame_height))
         # ---------------------------------------------------------------------------------------
+
         top_returns = episode(record_video, out=out, frame_width=frame_width, frame_height=frame_height)
+
+        # Release the video writer
+        # ---------------------------------------------------------------------------------------
+        out.release()
+        # ---------------------------------------------------------------------------------------
+
+        # Clean up any OpenCV windows
+        # ---------------------------------------------------------------------------------------
+        cv2.destroyAllWindows()
+        # ---------------------------------------------------------------------------------------
+
+        # Print success message
+        # ---------------------------------------------------------------------------------------
+        print(f"Video saved as {video_filename}")
+        # ---------------------------------------------------------------------------------------
+        
     else:
         # normal episode without video
         tot_returns = episode(record_video)
