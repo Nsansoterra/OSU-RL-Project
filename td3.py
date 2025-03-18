@@ -182,9 +182,6 @@ class ReplayMemory(object):
             n_step_reward = sum(self.gamma**i * self.n_step_buffer[i][3] for i in range(self.n_step))
 
             self.memory.append((state, action, next_state, n_step_reward, done))
-            # If episode ended, reset buffer
-            if transition[4]:
-                self.n_step_buffer.clear()
 
     def sample(self, batch_size):
         return random.sample(self.memory, batch_size)
