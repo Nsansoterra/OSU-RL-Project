@@ -98,6 +98,10 @@ class NoisyLayer(nn.Module):
         self.weight_mu.data.uniform_(-mu_range, mu_range)
         self.bias_mu.data.uniform_(-mu_range, mu_range)
 
+    def reset_noise(self):
+        self.weight_epsilon.normal_()
+        self.bias_epsilon.normal_()
+
     def forward(self, x):
         self.weight_epsilon.normal_()
         self.bias_epsilon.normal_()
@@ -107,34 +111,58 @@ class NoisyLayer(nn.Module):
 
         return F.linear(x, weight, bias)
 
-class DQN(nn.Module):
-    def __init__(self, state_size, n_actions):
-        super(DQN, self).__init__()
-        # For vector input
+class Actor(nn.Module):
+    def __init__(self, state_size, action_size, max_action):
+        super(Actor, self).__init__()
         self.fc1 = NoisyLayer(state_size, 384)
         self.fc2 = NoisyLayer(384, 384)
+        self.fc3 = nn.Linear(384, action_size)
+        self.max_action = max_action
         
-        # Value stream
-        self.fc1_value = NoisyLayer(384, 384)
-        self.fc2_value = NoisyLayer(384, 1)
-        
-        # Advantage stream
-        self.fc1_advantage = NoisyLayer(384, 384)
-        self.fc2_advantage = NoisyLayer(384, n_actions)
-
-
     def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = torch.tanh(self.fc3(x)) * self.max_action
+        return x
+    
+    def reset_noise(self):
+        self.fc1.reset_noise()
+        self.fc2.reset_noise()
+    
+class Critic(nn.Module):
+
+    def __init__(self, state_size, action_size):
+        super().__init__()
+        # First Critic
+        self.fc1 = nn.Linear(state_size + action_size, 384)
+        self.fc2 = nn.Linear(384, 384)
+        self.fc3 = nn.Linear(384, 1)
+        # Second Critic
+        self.fc4 = nn.Linear(state_size + action_size, 384)
+        self.fc5 = nn.Linear(384, 384)
+        self.fc6 = nn.Linear(384, 1)
         
-        value = torch.relu(self.fc1_value(x))
-        value = self.fc2_value(value)
+    def forward(self, state, action):
+        sa = torch.cat([state, action], 1)
         
-        advantage = torch.relu(self.fc1_advantage(x))
-        advantage = self.fc2_advantage(advantage)
+        # First Critic
+        q1 = F.relu(self.fc1(sa))
+        q1 = F.relu(self.fc2(q1))
+        q1 = self.fc3(q1)
         
-        q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
-        return q_values
+        # Second Critic
+        q2 = F.relu(self.fc4(sa))
+        q2 = F.relu(self.fc5(q2))
+        q2 = self.fc6(q2)
+        
+        return q1, q2
+    
+    def Q1(self, state, action):
+        sa = torch.cat([state, action], 1)
+        q1 = F.relu(self.fc1(sa))
+        q1 = F.relu(self.fc2(q1))
+        q1 = self.fc3(q1)
+        return q1
     
 class ReplayMemory(object):
     def __init__(self, capacity, n_step=3, gamma=0.99):
@@ -165,71 +193,118 @@ class ReplayMemory(object):
         return len(self.memory)
     
 
-def select_action(obs):
-    global steps_done
-    sample = random.random()
-    
-    steps_done +=1
+class TD3:
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        max_action,
+        discount=0.99,
+        tau=0.005,
+        policy_noise=0.2,
+        noise_clip=0.5,
+        policy_freq=2,
+        n_step=3,
+        lr=3e-4,
+        exploration_noise=0.3
+    ):
+        self.actor = Actor(state_dim, action_dim, max_action).to(device)
+        self.actor_target = Actor(state_dim, action_dim, max_action).to(device)
+        self.actor_target.load_state_dict(self.actor.state_dict())
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
 
+        self.critic = Critic(state_dim, action_dim).to(device)
+        self.critic_target = Critic(state_dim, action_dim).to(device)
+        self.critic_target.load_state_dict(self.critic.state_dict())
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
 
-    with torch.no_grad():
-        # Get the discrete action index
-        discrete_action = policy_net(obs).argmax().item()
-        q_values = policy_net(obs)
-        #print(q_values)
-        # Return the discrete action as a tensor
-        return torch.tensor([discrete_action], device=device)
-    
-def optimize_model():
-    if len(memory) < BATCH_SIZE:
-        return
-    batch = memory.sample(BATCH_SIZE)
+        self.max_action = max_action
+        self.discount = discount
+        self.tau = tau
+        self.policy_noise = policy_noise
+        self.noise_clip = noise_clip
+        self.policy_freq = policy_freq
+        self.n_step = n_step
+        self.exploration_noise = exploration_noise  # Store the exploration noise
+        self.total_it = 0
+        self.exploration_decay = 0.9999  # Decay factor for exploration noise
+        self.total_it = 0
 
-    states, actions, new_states, rewards, dones = zip(*batch)
+    def select_action(self, state, evaluate=False):
+        with torch.no_grad():
+            # Reset the noise for stochastic forward pass
+            self.actor.reset_noise()
+            action = self.actor(state).cpu().numpy().flatten()
+            if not evaluate:
+                # Add explicit exploration noise that decays over time
+                noise = np.random.normal(0, self.exploration_noise, size=action.shape)
+                action = action + noise
+                
+                # Decay exploration noise
+                self.exploration_noise = max(0.05, self.exploration_noise * self.exploration_decay)
+                
+            return np.clip(action, -self.max_action, self.max_action)
 
-    states = torch.cat(states)  
-    actions = torch.cat(actions) 
-    actions = actions.long()
-    new_states = torch.cat(new_states) 
-    rewards = torch.tensor(rewards, dtype=torch.float, device=device)
-    dones = torch.tensor(dones, dtype=torch.float, device=device)
-    
-    with torch.no_grad():
-        best_policy_actions = policy_net(new_states).argmax(dim=1)
+    def train(self, replay_buffer, batch_size=100):
+        self.total_it += 1
 
-        target_q = rewards + (1-dones) * (GAMMA ** memory.n_step) * \
-            target_net(new_states).gather(dim=1, index=best_policy_actions.unsqueeze(dim=1)).squeeze()
+        if len(replay_buffer) < batch_size:
+            return
 
-    current_q = policy_net(states).gather(dim=1, index=actions.unsqueeze(dim=1)).squeeze()
-    criterion = nn.SmoothL1Loss()
-    loss = criterion(current_q, target_q)
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+        # Sample from replay buffer
+        batch = replay_buffer.sample(batch_size)
+        states, actions, next_states, rewards, dones = zip(*batch)
 
-def discretize_action_space(player_action_spec, bins_per_dimension=3):
-    # Get the shape, min, and max values of the continuous action space
-    action_dims = player_action_spec.shape[0]  # Should be 3
-    action_min = player_action_spec.minimum
-    action_max = player_action_spec.maximum
-    
-    # Calculate total number of discrete actions (3^3 = 27 with bins_per_dimension=3)
-    total_discrete_actions = bins_per_dimension ** action_dims
-    print(f"Total discrete actions: {total_discrete_actions}")
-    
-    # Function to convert discrete action index to continuous action vector
-    def discrete_to_continuous(action_idx):
-        continuous_action = np.zeros(action_dims)
-        
-        for dim in range(action_dims):
-            # Calculate which bin this dimension should use
-            bin_size = (action_max[dim] - action_min[dim]) / bins_per_dimension
-            bin_idx = (action_idx // (bins_per_dimension ** dim)) % bins_per_dimension
-            continuous_action[dim] = action_min[dim] + (bin_idx + 0.5) * bin_size
+        states = torch.cat(states)
+        actions = torch.cat(actions)
+        next_states = torch.cat(next_states)
+        rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+        dones = torch.tensor(dones, dtype=torch.float, device=device)
+
+        with torch.no_grad():
+            noise = (
+                torch.randn_like(actions) * self.policy_noise
+            ).clamp(-self.noise_clip, self.noise_clip)
             
-        return continuous_action
-    
-    return total_discrete_actions, discrete_to_continuous
+            next_actions = (
+                self.actor_target(next_states) + noise
+            ).clamp(-self.max_action, self.max_action)
+
+            # Compute Q value
+            target_Q1, target_Q2 = self.critic_target(next_states, next_actions)
+            target_Q = torch.min(target_Q1, target_Q2)
+            target_Q = rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * (self.discount ** self.n_step) * target_Q
+
+            target_Q = torch.clamp(target_Q, -1e6, 1e6)
+
+        # Get current Q estimates
+        current_Q1, current_Q2 = self.critic(states, actions)
+
+        # Compute critic loss
+        critic_loss = F.smooth_l1_loss(current_Q1, target_Q) + F.smooth_l1_loss(current_Q2, target_Q)
+
+        # Optimize the critic
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+
+        # Delayed policy updates
+        if self.total_it % self.policy_freq == 0:
+            # Compute actor loss
+            actor_loss = -self.critic.Q1(states, self.actor(states)).mean()
+            
+            # Optimize the actor 
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor_optimizer.step()
+
+            # Update the target networks
+            for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
 
 
 def process_observation(timestep, player_idx=0):
@@ -301,10 +376,14 @@ def get_observation_tensor(timestep, player_idx=0, device='cuda'):
     return obs_tensor, ball_vel, goal_vel
 
 
+# Hyperparameters
 BATCH_SIZE = 128
-GAMMA = 0.99 #discount factor
-TAU = 0.05 #update rate of target network
-LR = 0.00025
+GAMMA = 0.99  # discount factor
+TAU = 0.005  # for target network update
+LR = 1e-4  # learning rate 
+POLICY_NOISE = 0.2  # noise added to target policy during critic update
+NOISE_CLIP = 0.5  # limit for noise
+POLICY_FREQ = 2  # frequency of delayed policy updates
 
 
 
@@ -328,18 +407,24 @@ env = dm_soccer.load(team_size=1,
 
 
 player_action_spec = env.action_spec()[0]  
-n_actions, action_converter = discretize_action_space(player_action_spec, bins_per_dimension=3)
+action_dim = player_action_spec.shape[0]  # 3 for soccer environment
+max_action = float(player_action_spec.maximum[0])  # Assuming symmetric action space
 
-policy_net = DQN(48, n_actions).to(device)
-policy_net.load_state_dict(torch.load('dqn_model600.pth'))
-target_net = DQN(48, n_actions).to(device)
-target_net.load_state_dict(policy_net.state_dict())
-policy_net.train()
-target_net.train()
+state_dim = 48
+agent = TD3(
+    state_dim=state_dim,
+    action_dim=action_dim,
+    max_action=max_action,
+    discount=GAMMA,
+    tau=TAU,
+    policy_noise=POLICY_NOISE * max_action,
+    noise_clip=NOISE_CLIP * max_action,
+    policy_freq=POLICY_FREQ,
+    n_step=3,
+    lr=LR
+)
+memory = ReplayMemory(100000, n_step=3, gamma=GAMMA)
 
-optimizer = optim.Adam(policy_net.parameters(), lr=LR, amsgrad=True)
-
-memory = ReplayMemory(100000, n_step=3, gamma=0.99)
 
 
 
@@ -367,8 +452,11 @@ for episode in count():
     proximity_count = 0
     time_since_touch = 0
 
-    if(episode % 100 == 0):
-        torch.save(policy_net.state_dict(), f"dqn_model_contin_{episode}.pth")
+    if episode % 100 == 0:
+        torch.save(agent.actor.state_dict(), f"td3_actor_model_{episode}.pth")
+        torch.save(agent.critic.state_dict(), f"td3_critic_model_{episode}.pth")
+        torch.save(agent.actor_target.state_dict(), f"td3_actor_target_model_{episode}.pth")
+        torch.save(agent.critic_target.state_dict(), f"td3_critic_target_model_{episode}.pth")
     for t in count():
         # Take random actions for each player
         actions = []
@@ -376,8 +464,7 @@ for episode in count():
         stagnant+=1
         time_since_touch+=1
         
-        action = select_action(state)  
-        continuous_action = action_converter(action.item())  
+        continuous_action = agent.select_action(state)
         actions.append(continuous_action)  
         actions.append(np.random.uniform(-1.0, 1.0, size=action_specs[0].shape))
         #print(actions)
@@ -452,22 +539,14 @@ for episode in count():
         total_reward += reward
         #~~~~~~~~~~~~~calculate reward~~~~~~~~~~~~~#
         #print(reward)
-
+        
+        action_tensor = torch.tensor(continuous_action, dtype=torch.float32).unsqueeze(0).to(device)
         r = torch.tensor(reward, dtype=torch.float, device=device)
-        memory.push((state, action, new_state, r, done))
-        optimize_model()
-
-        # Soft update of the target network's weights
-        # θ′ ← τ θ + (1 −τ )θ′
-        target_net_state_dict = target_net.state_dict()
-        policy_net_state_dict = policy_net.state_dict()
-        for key in policy_net_state_dict:
-            target_net_state_dict[key] = policy_net_state_dict[key]*TAU + target_net_state_dict[key]*(1-TAU)
-        target_net.load_state_dict(target_net_state_dict)
+        memory.push((state, action_tensor, new_state, r, done))
+        agent.train(memory, BATCH_SIZE)
 
         state = new_state
         
-
         if done:
             total_rewards.append(total_reward)
             plot_avg_reward()
