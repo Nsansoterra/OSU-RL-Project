@@ -2,8 +2,8 @@ import os
 import torch as T
 import torch.nn.functional as F
 import numpy as np
-from Buffer import ReplayBuffer
-from SAC import Actor, Critic, Value
+from .Buffer import ReplayBuffer
+from .SAC import Actor, Critic, Value
 
 
 class Agent():
@@ -41,13 +41,14 @@ class Agent():
         target_value_params = self.target_value.named_parameters()
         value_params = self.value.named_parameters()
 
-        target_value_state_dict = dict(target_value_params)
-        value_state_dict = dict(value_params)
+        #target_value_state_dict = dict(target_value_params)
+        #value_state_dict = dict(value_params)
 
-        for name in value_state_dict:
-            value_state_dict[name] = tau*value_state_dict[name].clone() + (1-tau)*target_value_state_dict[name].clone()
+        for target_param, param in zip(self.target_value.parameters(), self.value.parameters()):
+            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-        self.target_value.load_state_dict(value_state_dict)
+
+        #self.target_value.load_state_dict(value_state_dict)
 
     def save_models(self):
         print("\n SAVING MODELS \n")
@@ -73,35 +74,37 @@ class Agent():
         state, action, reward, n_state, done = self.memory.sample_buffer(self.batch_size)
 
         # format data
-        reward = T.tensor(reward, dtype=T.float).to(self.actor.device)
-        done = T.tensor(done).to(self.actor.device)
-        state = T.tensor(state, dtype=T.float,).to(self.actor.device)
-        n_state = T.tensor(n_state, dtype=T.float,).to(self.actor.device)
-        action = T.tensor(action, dtype=T.float,).to(self.actor.device)
+        reward = T.tensor(reward, dtype=T.float32).to(self.actor.device)
+        done = T.tensor(done, dtype=T.float32).to(self.actor.device)
+        state = T.tensor(state, dtype=T.float32).to(self.actor.device)
+        n_state = T.tensor(n_state, dtype=T.float32).to(self.actor.device)
+        action = T.tensor(action, dtype=T.float32).to(self.actor.device)
 
         # 
         value = self.value(state).view(-1)
-        value_ = self.target_value(state).view(-1)
-        value_[done] = 0.0
+        value_ = self.target_value(n_state).view(-1)
+        value_ = value_ * (1 - done.to(dtype=T.float32))
 
         # update steps for the value network
         actions, log_probs = self.actor.sample_normal(state,reparameterize=False)
         log_probs = log_probs.view(-1)
-        actions = actions.float()
+        actions = actions.to(dtype=T.float32)
         q1_new_policy = self.critic_1.forward(state, actions)
         q2_new_policy = self.critic_2.forward(state, actions)
         critic_value = T.min(q1_new_policy, q2_new_policy)
         critic_value = critic_value.view(-1)
 
         self.value.optimizer.zero_grad()
-        value_target = critic_value - log_probs
-        value_loss = 0.5*F.mse_loss(value, value_target)
+        value_target = (critic_value - log_probs).to(dtype=T.float32)
+        value_loss = (0.5*F.mse_loss(value, value_target))
         value_loss.backward(retain_graph=True)
         self.value.optimizer.step()
 
 
         # update steps for actor
         actions, log_probs = self.actor.sample_normal(state, reparameterize=True)
+        actions = actions.to(dtype=T.float32)
+        log_probs = log_probs.to(dtype=T.float32)
         log_probs = log_probs.view(-1)
         q1_new_policy = self.critic_1.forward(state, actions)
         q2_new_policy = self.critic_2.forward(state, actions)
@@ -109,16 +112,17 @@ class Agent():
         critic_value = critic_value.view(-1)
 
         actor_loss = log_probs - critic_value
-        actor_loss = T.mean(actor_loss)
+        actor_loss = T.mean(actor_loss).to(dtype=T.float32)
         self.actor.optimizer.zero_grad()
         actor_loss.backward(retain_graph=True)
         self.actor.optimizer.step()
 
 
         # update Critics
-        self.critic_1.optimimizer.zero_grad()
-        self.critic_2.optimimizer.zero_grad()
-        q_hat = self.scale * reward + self.gamma*value_
+        self.critic_1.optimizer.zero_grad()
+        self.critic_2.optimizer.zero_grad()
+        reward = T.tensor(reward * self.scale, dtype=T.float32).to(self.actor.device)
+        q_hat = reward + self.gamma * value_
         q1_old_policy = self.critic_1.forward(state, action).view(-1)
         q2_old_policy = self.critic_2.forward(state, action).view(-1)
         critic_1_loss = 0.5 * F.mse_loss(q1_old_policy, q_hat)
@@ -126,10 +130,10 @@ class Agent():
 
         critic_loss = critic_1_loss + critic_2_loss
         critic_loss.backward()
-        self.critic_1.optimimizer.step()
-        self.critic_2.optimimizer.step()
+        self.critic_1.optimizer.step()
+        self.critic_2.optimizer.step()
 
-        self.update_network_parameters
+        self.update_network_parameters()
 
 
 

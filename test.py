@@ -49,12 +49,13 @@ def plot_avg_reward(show_result=False):
             display.display(plt.gcf())
 
 
-player_vel_history = [deque(maxlen=10),deque(maxlen=10),deque(maxlen=10),deque(maxlen=10)]  # Store last 10 velocities toward ball
-ball_vel_history = [deque(maxlen=10),deque(maxlen=10),deque(maxlen=10),deque(maxlen=10)]  # Store last 10 velocities of ball toward goal
+player_vel_history = [deque(maxlen=10),deque(maxlen=10)]  # Store last 10 velocities toward ball
+ball_vel_history = [deque(maxlen=10),deque(maxlen=10)]  # Store last 10 velocities of ball toward goal
 stagnant = 0
 time_since_touch = 0
+back = 0
+forw = 0
 
-# function to get the rewards for moving toward the ball and moving ball to the goal
 # function to get the rewards for moving toward the ball and moving ball to the goal
 def get_reward(player_vel, ball_vel, time_since_touch, player):
     global forw
@@ -102,15 +103,15 @@ def extract_state(obs):
         np.array(obs['ball_ego_position']).flatten(),
         np.array(obs['ball_ego_linear_velocity']).flatten(),
         np.array(obs['ball_ego_angular_velocity']).flatten(),
-        np.array(obs['teammate_0_ego_position']).flatten(),
-        np.array(obs['teammate_0_ego_linear_velocity']).flatten(),
-        np.array(obs['teammate_0_ego_orientation']).flatten(),
+        #np.array(obs['teammate_0_ego_position']).flatten(),
+        #np.array(obs['teammate_0_ego_linear_velocity']).flatten(),
+        #np.array(obs['teammate_0_ego_orientation']).flatten(),
         np.array(obs['opponent_0_ego_position']).flatten(),
         np.array(obs['opponent_0_ego_linear_velocity']).flatten(),
         np.array(obs['opponent_0_ego_orientation']).flatten(),
-        np.array(obs['opponent_1_ego_position']).flatten(),
-        np.array(obs['opponent_1_ego_linear_velocity']).flatten(),
-        np.array(obs['opponent_1_ego_orientation']).flatten(),
+        #np.array(obs['opponent_1_ego_position']).flatten(),
+        #np.array(obs['opponent_1_ego_linear_velocity']).flatten(),
+        #np.array(obs['opponent_1_ego_orientation']).flatten(),
         np.array([obs['stats_vel_to_ball']]).flatten(),  # Single value stats
         np.array([obs['stats_vel_ball_to_goal']]).flatten(),
         np.array([obs['stats_home_avg_teammate_dist']]).flatten(),
@@ -125,8 +126,8 @@ reward_log_file = "rewards.csv"
 
 # Initialize the soccer environment with random actions
 random_state = np.random.RandomState(42)
-env = dm_soccer.load(team_size=2,
-                     time_limit=500.0,
+env = dm_soccer.load(team_size=1,
+                     time_limit=300.0,
                      disable_walker_contacts=False,
                      enable_field_box=True,
                      terminate_on_goal=True,
@@ -138,12 +139,11 @@ action_specs = env.action_spec()
 timestep = env.reset()
 
 # setup the agents
-team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player0")
-team1_player2 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[1].maximum, "player1")
-team2_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[2].maximum, "player2")
-team2_player2 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[3].maximum, "player3")
+team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player", tau=0.01)
+team2_player1 = 0
 
-players = [team1_player1, team1_player2, team2_player1, team2_player2]
+
+players = [team1_player1, team2_player1]
 
 
 
@@ -171,8 +171,12 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
         # record the current state and next action
         for i in range(len(action_specs)):
             states.append(extract_state(timestep.observation[i]))
-            action = players[i].choose_action(states[i])
-            actions.append(action)
+            if i == 0:
+                action = team1_player1.choose_action(states[i])
+                actions.append(action)
+            else:
+                action = np.random.uniform(action_specs[i].minimum, action_specs[i].maximum, size=action_specs[i].shape)
+                actions.append(action)
         
         # Step through the environment with the random actions
         timestep = env.step(actions)
@@ -183,8 +187,9 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
             reward = (500*timestep.reward[i]) + get_reward(timestep.observation[i]['stats_vel_to_ball'],timestep.observation[i]['stats_vel_ball_to_goal'], time_since_touch, i)
             done = timestep.last() or time_since_touch == 2000
             # add MDP tuple to the replay buffer
-            players[i].remember(states[i], actions[i], reward, next_state, done)
-            players[i].learn()
+            if i ==0:
+                team1_player1.remember(states[i], actions[i], reward, next_state, done)
+                team1_player1.learn()
             tot_rewards[i] += reward
 
         if capture_video:
@@ -198,6 +203,10 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
             # ---------------------------------------------------------------------------------------
             image = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
             # ---------------------------------------------------------------------------------------
+
+            if stagnant % 4 == 0:
+                image = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
+                cv2.imshow('Soccer', image)
 
             # Write the image to the video file
             # ---------------------------------------------------------------------------------------
@@ -214,14 +223,14 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
 ##############
 
 save_freq = 5 # frequency that the models are saved
-video_frequency = 75 # frequency at which to capture videos of the play
+video_frequency = 200 # frequency at which to capture videos of the play
 load_model = True
 episodes = 0
 tot_returns_tot = []
 
 if load_model:
     for i in range(len(action_specs)):
-        players[i].load_models()
+        team1_player1.load_models()
 
 while True:
     env.reset()
@@ -230,8 +239,7 @@ while True:
     print("Episode {} start".format(episodes))
     # save the models every so many episodes
     if episodes % save_freq == 0:
-        for i in range(len(action_specs)):
-            players[i].save_models()
+        team1_player1.save_models()
 
     # record the run every so many episodes
     if episodes % video_frequency == 0:
@@ -274,6 +282,8 @@ while True:
         file.write(f"{tot_returns}\n")
 
     episodes += 1
+    forw = 0
+    back = 0
     print(episodes, " complete\n")
     tot_returns_tot.append(tot_returns)
     plot_avg_reward()

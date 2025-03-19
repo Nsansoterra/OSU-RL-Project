@@ -10,20 +10,22 @@ import numpy as np
 
 # Critic Network
 class Critic(nn.Module):
-    def __init__(self, beta, input_dim, output_dim, name="critc", savepath="../OSU-RL-Project/SAC_nets"):
+    def __init__(self, beta, input_dim, output_dim, name="critic", savepath="../SAC_nets"):
         super(Critic, self).__init__()
         # save parameters
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.name = name
         self.savepath = savepath
+        if not os.path.exists(savepath):
+            os.makedirs(savepath)  # Create the directory if it doesn't exist
         self.savepoint_file = os.path.join(self.savepath, name+"_sac")
 
         self.fc1 = nn.Linear(self.input_dim+output_dim, 256)
         self.fc2 = nn.Linear(256,256)
         self.q = nn.Linear(256, 1)
 
-        self.optimimizer = optim.Adam(self.parameters(), lr = beta)
+        self.optimizer = optim.Adam(self.parameters(), lr = beta)
         self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
 
         self.to(self.device)
@@ -49,11 +51,13 @@ class Critic(nn.Module):
 
 
 class Value(nn.Module):
-    def __init__(self, beta, input_dims, name='value', savepath='../OSU-RL-Project/SAC_nets'):
+    def __init__(self, beta, input_dims, name='value', savepath='../SAC_nets'):
         super(Value, self).__init__()
         self.input_dims = input_dims
         self.name = name
         self.savepath = savepath
+        if not os.path.exists(savepath):
+            os.makedirs(savepath)  # Create the directory if it doesn't exist
         self.savepath_file = os.path.join(self.savepath, name+'_sac')
 
         self.fc1 = nn.Linear(self.input_dims, 256)
@@ -62,6 +66,7 @@ class Value(nn.Module):
 
         self.optimizer = optim.Adam(self.parameters(), lr=beta)
         self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        self.to(self.device)
 
 
     def forward(self, state):
@@ -81,7 +86,7 @@ class Value(nn.Module):
 
 # Actor Network
 class Actor(nn.Module):
-    def __init__(self, alpha, state_dim, action_dim, max_action, name="actor", save_path="../OSU-RL-Project/SAC_nets"):
+    def __init__(self, alpha, state_dim, action_dim, max_action, name="actor", save_path="../SAC_nets"):
         """
         Input Args-
 
@@ -100,6 +105,8 @@ class Actor(nn.Module):
         self.action_dim = action_dim
         self.max_action = max_action
         self.savepoint_dir = save_path
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)  # Create the directory if it doesn't exist
         self.savepoint_file = os.path.join(self.savepoint_dir, name+'_sac')
 
         self.fc1 = nn.Linear(state_dim, 256)
@@ -110,22 +117,25 @@ class Actor(nn.Module):
 
         self.optimizer = optim.Adam(self.parameters(), lr=alpha)
         self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
+        self.to(self.device)
         
     
     def forward(self, state):
         # first two fully connected layers are the same for both ouputs
+        state = state.to(self.device)
         x = self.fc1(state)
         x = T.relu(x)
         x = self.fc2(x)
         x = T.relu(x)
 
         # mu and sigma
-        mu = self.mu_layer(x)
+        mu = T.tanh(self.mu_layer(x))
         sigma = self.log_std_layer(x)
 
-        sigma = T.clamp(sigma, min=1e-6, max=1)
+        sigma = T.clamp(sigma,-20, 2)
+        std = T.exp(sigma)
 
-        return mu, sigma
+        return mu, std
 
     def sample_normal(self, state, reparameterize=True):
         mu, sigma = self.forward(state)
@@ -137,14 +147,15 @@ class Actor(nn.Module):
             actions = probs.sample()
 
         action = T.tanh(actions)*T.tensor(self.max_action).to(self.device)
-        log_probs = probs.log_prob(actions)
-        log_probs -= T.log(1-action**2+1e-6)
+        log_probs = probs.log_prob(actions) - T.log(1-action.pow(2)+1e-6)
         log_probs = log_probs.sum(-1, keepdim=True)
 
         return action, log_probs
     
     def save_model(self):
         T.save(self.state_dict(), self.savepoint_file)
+        print(self.state_dict())
 
     def load_model(self):
         self.load_state_dict(T.load(self.savepoint_file))
+        print(self.state_dict())
