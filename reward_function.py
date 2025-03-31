@@ -37,7 +37,7 @@ class RewardFunction:
             "cpu"
         )
         
-    def UpdateAndFetchReward(self, timestep):
+    def UpdateAndFetchReward(self, timestep, player_idx):
         """
         Process the observation and return the reward for the timestep.
         
@@ -57,19 +57,19 @@ class RewardFunction:
         scored = False
         timeout = False
 
-        player_pos = timestep.observation[1]['opponent_0_ego_position']
-        ball_pos = timestep.observation[1]['ball_ego_position']
-        distance_to_ball = np.linalg.norm(player_pos[0] - ball_pos[0])
+        #player_pos = timestep.observation[1]['opponent_0_ego_position']
+        ball_pos = timestep.observation[player_idx]['ball_ego_position']
+        distance_to_ball = np.linalg.norm(ball_pos[0])
 
         #ball_vel is velocity to the ball
         #goal_vel is ball's velocity to goal
-        next_state, ball_vel, goal_vel = self._get_observation_tensor(timestep, player_idx=0, device=self.device)
+        next_state, ball_vel, goal_vel = self._get_observation_tensor(timestep, player_idx, device=self.device)
         self.ball_vel_history.append(ball_vel)
         self.goal_vel_history.append(goal_vel)
         self.distance_history.append(distance_to_ball)
 
-        reward = timestep.reward
-        reward = reward[0]*10
+        reward = timestep.reward[player_idx]
+        reward = reward*10
 
 
         #~~~~~~~~~~~~~calculate reward~~~~~~~~~~~~~#
@@ -81,12 +81,12 @@ class RewardFunction:
         #if it hasn't scored a goal within the time limit we just reset
         if self.stagnant > self.stagnant_timeout:
             timeout = True
-            reward-=50
+            #reward-=50
 
         #if it hasn't touched the ball within a certain time limit, we reset earlier
         if self.time_since_touch > self.touch_timeout:
             timeout = True
-            reward-=50
+            #reward-=50
 
         #tack on additions rewards beside the goal
         additional_reward = 0
@@ -96,17 +96,18 @@ class RewardFunction:
             #print(distance_history[-1])
             #print("\n")
             if self.distance_history[0] - self.distance_history[-1] > 0.1:
-                additional_reward += 0.1
+                additional_reward += 1*self.distance_history[0] - self.distance_history[-1]
 
         if len(self.goal_vel_history) >= 5:
             # Calculate if goal velocity is consistently improving
             goal_vel_trend = sum(self.goal_vel_history[-1] - self.goal_vel_history[i] for i in range(-5, -1)) / 4
             if goal_vel_trend > 0.05:
-                additional_reward += 0.4  # Larger reward for moving ball toward goal
+                #additional_reward += 0.4  # Larger reward for moving ball toward goal
                 self.time_since_touch = 0
             elif goal_vel_trend < -0.05:
-                additional_reward -= 0.3  # Penalty for hitting the ball away from goal
+                #additional_reward -= 0.3  # Penalty for hitting the ball away from goal
                 self.time_since_touch = 0
+            additional_reward += 4*goal_vel[0]
 
         reward += additional_reward
 

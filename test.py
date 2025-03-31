@@ -16,6 +16,7 @@ from collections import deque
 import matplotlib
 import matplotlib.pyplot as plt
 import torch
+from reward_function import RewardFunction
 
 
 is_ipython = 'inline' in matplotlib.get_backend()
@@ -53,42 +54,6 @@ player_vel_history = [deque(maxlen=10),deque(maxlen=10)]  # Store last 10 veloci
 ball_vel_history = [deque(maxlen=10),deque(maxlen=10)]  # Store last 10 velocities of ball toward goal
 stagnant = 0
 time_since_touch = 0
-back = 0
-forw = 0
-
-# function to get the rewards for moving toward the ball and moving ball to the goal
-def get_reward(player_vel, ball_vel, time_since_touch, player):
-    global forw
-    global back
-    player_vel_history[player].append(player_vel)
-    ball_vel_history[player].append(ball_vel)
-    
-
-    additional_reward = 0
-    if len(ball_vel_history[player]) >= 5:
-        # Calculate if ball velocity is consistently improving
-        ball_vel_trend = sum(ball_vel_history[player][-1] - ball_vel_history[player][i] for i in range(-5, -1)) / 4
-        player_vel_trend = sum(player_vel_history[player][-1] - player_vel_history[player][i] for i in range(-5, -1)) / 4
-        if player_vel_trend > 0.01:
-            additional_reward += 0.1  # Reward for improving trend toward ball
-        if player_vel < -0.01 and ball_vel_trend < 0.01:
-            additional_reward -= 0.3
-        if player_vel > 0.01:
-            additional_reward += 0.6*player_vel[0]
-
-    if len(ball_vel_history[player]) >= 5:
-        # Calculate if goal velocity is consistently improving
-        ball_vel_trend = sum(ball_vel_history[player][-1] - ball_vel_history[player][i] for i in range(-5, -1)) / 4
-        if ball_vel > 0.05:
-            additional_reward += 1.  # Larger reward for moving ball toward goal
-            time_since_touch = 0
-        elif ball_vel < -0.05:
-            additional_reward -= 0.8  # Penalty for hitting the ball away from goal
-            time_since_touch = 0
-    if time_since_touch == 2000:
-        additional_reward -= 200
-    return additional_reward
-
 
 
 def extract_state(obs):
@@ -139,7 +104,7 @@ action_specs = env.action_spec()
 timestep = env.reset()
 
 # setup the agents
-team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player", tau=0.01)
+team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player", tau=0.01, reward_scale=4)
 team2_player1 = 0
 
 
@@ -151,19 +116,17 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
 
     tot_rewards = [0,0,0,0]
     env.reset()
-    stagnant = 0
-    time_since_touch = 0
 
     # Retrieve action_specs for all players
     action_specs = env.action_spec()
     timestep = env.reset()
-    states = [] #np.zeros(len(action_specs)) # states of from the perspective of each player
+    states = [] # states of from the perspective of each player
+    for i in range(len(action_specs)):
+        reward_functions[i].reset()
+    done = 0
 
     # Step through the environment with random actions and capture video
-    while not timestep.last() and time_since_touch < 2000:  # Capture 100 frames
-
-        stagnant+=1
-        time_since_touch+=1
+    while not done:  # Capture 100 frames
 
         # Take action and observe current state for each player
         actions = []
@@ -184,8 +147,8 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
         for i in range(len(action_specs)):
             # record the next state reward and done marker for each player and add to the players buffer
             next_state = extract_state(timestep.observation[i])
-            reward = (500*timestep.reward[i]) + get_reward(timestep.observation[i]['stats_vel_to_ball'],timestep.observation[i]['stats_vel_ball_to_goal'], time_since_touch, i)
-            done = timestep.last() or time_since_touch == 2000
+            reward, _, scored, timeout = reward_functions[i].UpdateAndFetchReward(timestep, i)
+            done = timestep.last() or scored or timeout
             # add MDP tuple to the replay buffer
             if i ==0:
                 team1_player1.remember(states[i], actions[i], reward, next_state, done)
@@ -223,10 +186,13 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
 ##############
 
 save_freq = 5 # frequency that the models are saved
-video_frequency = 200 # frequency at which to capture videos of the play
+video_frequency = 100 # frequency at which to capture videos of the play
 load_model = True
 episodes = 0
 tot_returns_tot = []
+reward_function1 = RewardFunction()
+reward_function2 = RewardFunction()
+reward_functions = [reward_function1, reward_function2]
 
 if load_model:
     for i in range(len(action_specs)):
@@ -282,8 +248,6 @@ while True:
         file.write(f"{tot_returns}\n")
 
     episodes += 1
-    forw = 0
-    back = 0
     print(episodes, " complete\n")
     tot_returns_tot.append(tot_returns)
     plot_avg_reward()

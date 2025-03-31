@@ -16,6 +16,7 @@ from collections import deque
 import matplotlib
 import matplotlib.pyplot as plt
 import torch
+from reward_function import RewardFunction
 
 
 is_ipython = 'inline' in matplotlib.get_backend()
@@ -33,6 +34,7 @@ def plot_avg_reward(show_result=False):
         plt.title('Reward')
     plt.xlabel('Episode')
     plt.ylabel('Reward')
+    plt.ylim([-20,300])
     plt.plot(rewards_t.numpy())
     # Take 100 episode averages and plot them too
     # if len(rewards_t) >= 100:
@@ -48,45 +50,6 @@ def plot_avg_reward(show_result=False):
         else:
             display.display(plt.gcf())
 
-
-player_vel_history = [deque(maxlen=10),deque(maxlen=10),deque(maxlen=10),deque(maxlen=10)]  # Store last 10 velocities toward ball
-ball_vel_history = [deque(maxlen=10),deque(maxlen=10),deque(maxlen=10),deque(maxlen=10)]  # Store last 10 velocities of ball toward goal
-stagnant = 0
-time_since_touch = 0
-
-# function to get the rewards for moving toward the ball and moving ball to the goal
-# function to get the rewards for moving toward the ball and moving ball to the goal
-def get_reward(player_vel, ball_vel, time_since_touch, player):
-    global forw
-    global back
-    player_vel_history[player].append(player_vel)
-    ball_vel_history[player].append(ball_vel)
-    
-
-    additional_reward = 0
-    if len(ball_vel_history[player]) >= 5:
-        # Calculate if ball velocity is consistently improving
-        ball_vel_trend = sum(ball_vel_history[player][-1] - ball_vel_history[player][i] for i in range(-5, -1)) / 4
-        player_vel_trend = sum(player_vel_history[player][-1] - player_vel_history[player][i] for i in range(-5, -1)) / 4
-        if player_vel_trend > 0.01:
-            additional_reward += 0.1  # Reward for improving trend toward ball
-        if player_vel < -0.01 and ball_vel_trend < 0.01:
-            additional_reward -= 0.3
-        if player_vel > 0.01:
-            additional_reward += 0.6*player_vel[0]
-
-    if len(ball_vel_history[player]) >= 5:
-        # Calculate if goal velocity is consistently improving
-        ball_vel_trend = sum(ball_vel_history[player][-1] - ball_vel_history[player][i] for i in range(-5, -1)) / 4
-        if ball_vel > 0.05:
-            additional_reward += 1.  # Larger reward for moving ball toward goal
-            time_since_touch = 0
-        elif ball_vel < -0.05:
-            additional_reward -= 0.8  # Penalty for hitting the ball away from goal
-            time_since_touch = 0
-    if time_since_touch == 2000:
-        additional_reward -= 200
-    return additional_reward
 
 
 
@@ -121,7 +84,7 @@ def extract_state(obs):
     return state_vector
 
 # file name that will hold the rewards as episodes continue
-reward_log_file = "rewards.csv"
+reward_log_file = "rewards_2.csv"
 
 # Initialize the soccer environment with random actions
 random_state = np.random.RandomState(42)
@@ -138,10 +101,11 @@ action_specs = env.action_spec()
 timestep = env.reset()
 
 # setup the agents
-team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player0")
-team1_player2 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[1].maximum, "player1")
-team2_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[2].maximum, "player2")
-team2_player2 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[3].maximum, "player3")
+team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player0", tau=0.01, reward_scale=4)
+team1_player2 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[1].maximum, "player1", tau=0.01, reward_scale=4)
+team2_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player4", tau=0.01, reward_scale=4)
+team2_player2 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player5", tau=0.01, reward_scale=4)
+
 
 players = [team1_player1, team1_player2, team2_player1, team2_player2]
 
@@ -171,8 +135,12 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
         # record the current state and next action
         for i in range(len(action_specs)):
             states.append(extract_state(timestep.observation[i]))
-            action = players[i].choose_action(states[i])
-            actions.append(action)
+            if i == 0 or i == 1:
+                action = team1_player1.choose_action(states[i])
+                actions.append(action)
+            else:
+                action = np.random.uniform(action_specs[i].minimum, action_specs[i].maximum, size=action_specs[i].shape)
+                actions.append(action)
         
         # Step through the environment with the random actions
         timestep = env.step(actions)
@@ -180,11 +148,12 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
         for i in range(len(action_specs)):
             # record the next state reward and done marker for each player and add to the players buffer
             next_state = extract_state(timestep.observation[i])
-            reward = (500*timestep.reward[i]) + get_reward(timestep.observation[i]['stats_vel_to_ball'],timestep.observation[i]['stats_vel_ball_to_goal'], time_since_touch, i)
-            done = timestep.last() or time_since_touch == 2000
+            reward, _, scored, timeout = reward_functions[i].UpdateAndFetchReward(timestep, i)
+            done = timestep.last() or scored or timeout
             # add MDP tuple to the replay buffer
-            players[i].remember(states[i], actions[i], reward, next_state, done)
-            players[i].learn()
+            if i == 0 or i == 1:
+                players[i].remember(states[i], actions[i], reward, next_state, done)
+                players[i].learn()
             tot_rewards[i] += reward
 
         if capture_video:
@@ -214,10 +183,15 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
 ##############
 
 save_freq = 5 # frequency that the models are saved
-video_frequency = 75 # frequency at which to capture videos of the play
+video_frequency = 500 # frequency at which to capture videos of the play
 load_model = True
 episodes = 0
 tot_returns_tot = []
+reward_function1 = RewardFunction()
+reward_function2 = RewardFunction()
+reward_function3 = RewardFunction()
+reward_function4 = RewardFunction()
+reward_functions = [reward_function1, reward_function2, reward_function3, reward_function4]
 
 if load_model:
     for i in range(len(action_specs)):
