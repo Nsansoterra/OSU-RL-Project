@@ -92,7 +92,7 @@ reward_log_file = "rewards.csv"
 # Initialize the soccer environment with random actions
 random_state = np.random.RandomState(42)
 env = dm_soccer.load(team_size=1,
-                     time_limit=300.0,
+                     time_limit=10000.0,
                      disable_walker_contacts=False,
                      enable_field_box=True,
                      terminate_on_goal=True,
@@ -104,7 +104,7 @@ action_specs = env.action_spec()
 timestep = env.reset()
 
 # setup the agents
-team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[0].shape[0], action_specs[0].maximum, "player", tau=0.01, reward_scale=4)
+team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[1].shape[0], action_specs[0].maximum, "player", tau=0.01, reward_scale=1)
 team2_player1 = 0
 
 
@@ -120,7 +120,6 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
     # Retrieve action_specs for all players
     action_specs = env.action_spec()
     timestep = env.reset()
-    states = [] # states of from the perspective of each player
     for i in range(len(action_specs)):
         reward_functions[i].reset()
     done = 0
@@ -134,6 +133,7 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
         # record the current state and next action
         for i in range(len(action_specs)):
             states.append(extract_state(timestep.observation[i]))
+            #player 0 is the only learning agent other player is random
             if i == 0:
                 action = team1_player1.choose_action(states[i])
                 actions.append(action)
@@ -208,7 +208,7 @@ while True:
         team1_player1.save_models()
 
     # record the run every so many episodes
-    if episodes % video_frequency == 0:
+    if episodes % video_frequency == 2:
         record_video = True
         # Video settings
         # ---------------------------------------------------------------------------------------

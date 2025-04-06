@@ -15,8 +15,8 @@ class ReplayBuffer():
         index = self.mem_cntr % self.mem_size
 
         # add the new info to the memory
-        self.state_memory[index] = state
-        self.new_state_memory[index] = n_state
+        self.state_memory[index] = np.asarray(state)
+        self.new_state_memory[index] = np.asarray(n_state)
         self.action_memory[index] = action
         self.reward_memory[index] = reward
         self.terminal_memory[index] = done

@@ -89,7 +89,7 @@ reward_log_file = "rewards_2.csv"
 # Initialize the soccer environment with random actions
 random_state = np.random.RandomState(42)
 env = dm_soccer.load(team_size=2,
-                     time_limit=500.0,
+                     time_limit=50000.0,
                      disable_walker_contacts=False,
                      enable_field_box=True,
                      terminate_on_goal=True,
@@ -136,7 +136,7 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
         for i in range(len(action_specs)):
             states.append(extract_state(timestep.observation[i]))
             if i == 0 or i == 1:
-                action = team1_player1.choose_action(states[i])
+                action = players[i].choose_action(states[i])
                 actions.append(action)
             else:
                 action = np.random.uniform(action_specs[i].minimum, action_specs[i].maximum, size=action_specs[i].shape)
@@ -208,7 +208,7 @@ while True:
             players[i].save_models()
 
     # record the run every so many episodes
-    if episodes % video_frequency == 0:
+    if episodes % video_frequency == 1:
         record_video = True
         # Video settings
         # ---------------------------------------------------------------------------------------

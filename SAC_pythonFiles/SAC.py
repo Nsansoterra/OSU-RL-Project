@@ -123,34 +123,51 @@ class Actor(nn.Module):
     def forward(self, state):
         # first two fully connected layers are the same for both ouputs
         state = state.to(self.device)
-        x = self.fc1(state)
-        x = T.relu(x)
-        x = self.fc2(x)
-        x = T.relu(x)
+        # x = self.fc1(state)
+        # x = T.relu(x)
+        # x = self.fc2(x)
+        # x = T.relu(x)
 
-        # mu and sigma
-        mu = T.tanh(self.mu_layer(x))
-        sigma = self.log_std_layer(x)
+        # # mu and sigma
+        # mu = T.tanh(self.mu_layer(x))
+        # sigma = self.log_std_layer(x)
 
-        sigma = T.clamp(sigma,-20, 2)
-        std = T.exp(sigma)
+        # sigma = T.clamp(sigma,-20, 2)
+        # std = T.exp(sigma)
+        x = F.relu(self.fc1(state))
+        x = F.relu(self.fc2(x))
 
-        return mu, std
+        # Compute mean and log standard deviation
+        mu = self.mu_layer(x).tanh()
+        log_std = self.log_std_layer(x).tanh()
+        log_std = -20 + 0.5 * (2 + 20) * (log_std + 1)
+        std = T.exp(log_std)
 
-    def sample_normal(self, state, reparameterize=True):
-        mu, sigma = self.forward(state)
-        probs = Normal(mu,sigma)
+        # Action distribution and sampling
+        dist = Normal(mu, std)
+        z = dist.rsample()
+        action = z.tanh()
+        log_prob = dist.log_prob(z) - T.log(1 - action.pow(2) + 1e-7)
+        log_prob = log_prob.sum(-1, keepdim=True)
 
-        if reparameterize:
-            actions = probs.rsample()
-        else:
-            actions = probs.sample()
+        return action, log_prob
 
-        action = T.tanh(actions)*T.tensor(self.max_action).to(self.device)
-        log_probs = probs.log_prob(actions) - T.log(1-action.pow(2)+1e-6)
-        log_probs = log_probs.sum(-1, keepdim=True)
+        #return mu, std
 
-        return action, log_probs
+    # def sample_normal(self, state, reparameterize=True):
+    #     mu, sigma = self.forward(state)
+    #     probs = Normal(mu,sigma)
+
+    #     if reparameterize:
+    #         actions = probs.rsample()
+    #     else:
+    #         actions = probs.sample()
+
+    #     action = T.tanh(actions)*T.tensor(self.max_action).to(self.device)
+    #     log_probs = probs.log_prob(actions) - T.log(1-action.pow(2)+1e-6)
+    #     log_probs = log_probs.sum(-1, keepdim=True)
+
+    #     return action, log_probs
     
     def save_model(self):
         T.save(self.state_dict(), self.savepoint_file)
