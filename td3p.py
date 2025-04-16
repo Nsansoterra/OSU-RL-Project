@@ -60,7 +60,7 @@ def plot_avg_loss(show_result=False):
 
 def plot_avg_reward(show_result=False):
     plt.figure(2)
-    rewards_t = torch.tensor(total_rewards, dtype=torch.float)
+    rewards_t = torch.tensor([float(r) for r in total_rewards], dtype=torch.float)
     if show_result:
         plt.title('Reward')
     else:
@@ -471,9 +471,11 @@ def process_observation(timestep, player_idx):
     """
     # Get the observation dictionary for the specified player
     obs_dict = timestep.observation[player_idx]
+    enemy_dict = timestep.observation[1]
 
     ball_vel = obs_dict.get('stats_vel_to_ball', None)
-    goal_vel = obs_dict.get('stats_vel_ball_to_goal', None)
+    #goal_vel = obs_dict.get('stats_vel_ball_to_goal', None)
+    goal_vel = enemy_dict.get('stats_vel_ball_to_goal', None)
     
     # Collect and flatten all observations
     obs_components = []
@@ -574,9 +576,9 @@ steps_done = 0
 episode_durations = []
 total_rewards = []
 
-ball_vel_history = deque(maxlen=10)  # Store last 10 velocities toward ball
-goal_vel_history = deque(maxlen=10)  # Store last 10 velocities of ball toward goal
-distance_history = deque(maxlen=10)  
+ball_vel_history = deque(maxlen=12)  # Store last 10 velocities toward ball
+goal_vel_history = deque(maxlen=12)  # Store last 10 velocities of ball toward goal
+distance_history = deque(maxlen=12)  
 
 for episode in count():
     timestep = env.reset()
@@ -586,6 +588,7 @@ for episode in count():
     state, prev_ball_vel, prev_goal_vel = get_observation_tensor(timestep, player_idx=0, device=device)
     
     total_reward = 0
+    reward = 0
     stagnant = 0
     proximity_count = 0
     time_since_touch = 0
@@ -628,6 +631,7 @@ for episode in count():
             distance_history.append(distance_to_ball)
 
             reward = timestep.reward
+            enemy = reward[1]
             reward = reward[0]
             
             #print("states shape:", state.shape)
@@ -647,8 +651,11 @@ for episode in count():
             #~~~~~~~~~~~~~calculate reward~~~~~~~~~~~~~#
             #if the reward is > 0, that means a goal has been scored and we reset the environment
             if reward > 0:
-                #done = True
-                reward+=100
+                done = True
+                reward = 500
+            if enemy > 0:
+                done = True
+                reward = -100
 
             #if it hasn't scored a goal within the time limit we just reset
             if stagnant > 3000:
@@ -695,14 +702,33 @@ for episode in count():
         if len(goal_vel_history) >= 5:
             # Calculate if goal velocity is consistently improving
             goal_vel_trend = sum(goal_vel_history[-1] - goal_vel_history[i] for i in range(-5, -1)) / 4
+            #if episode < 200:  # First phase - just hit the ball
             if goal_vel_trend > 0.05:
-                additional_reward += 3  # Larger reward for moving ball toward goal
+                additional_reward += 3.0
                 time_since_touch = -100
                 distance_history.clear()
             elif goal_vel_trend < -0.05:
-                additional_reward += 1  
+                additional_reward += 1.0
                 time_since_touch = -100
                 distance_history.clear()
+            '''
+            elif episode < 500:  # Second phase - focus on ball control
+                if goal_vel_trend > 0.05:
+                    additional_reward += np.clip(goal_vel_trend * 5.0, 0, 3.0)
+                    time_since_touch = -100
+                    distance_history.clear()
+            else:  # Final phase - focus on scoring
+                if goal_vel_trend > 0.05:
+                    additional_reward += np.clip(goal_vel_trend * 5.0, 0, 3.0)
+                    time_since_touch = -100
+                    distance_history.clear()
+                elif goal_vel_trend < -0.05:
+                    additional_reward -= np.clip(goal_vel_trend * 5.0, -3.0, 0)
+                    time_since_touch = -100
+                    distance_history.clear()
+            '''
+                
+                
                 
 
 
