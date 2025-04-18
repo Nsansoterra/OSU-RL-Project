@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 class RewardFunction:
     
-    def __init__(self, queue_length=10, stagnant_timeout=10000, touch_timeout=1000):
+    def __init__(self, queue_length=10, stagnant_timeout=100000, touch_timeout=10000):
         """
         Initialize the Reward Function.
         
@@ -76,7 +76,10 @@ class RewardFunction:
         #if the reward is > 0, that means a goal has been scored and we reset the environment
         if reward > 0:
             scored = True
-            reward+=300
+            reward += 500
+        elif reward < 0:
+            scored = True
+            reward -= 500
 
         #if it hasn't scored a goal within the time limit we just reset
         if self.stagnant > self.stagnant_timeout:
@@ -92,22 +95,24 @@ class RewardFunction:
         additional_reward = 0
 
         if len(self.distance_history) >= 5:
-            #print(distance_history[0])
-            #print(distance_history[-1])
-            #print("\n")
             if self.distance_history[0] - self.distance_history[-1] > 0.1:
-                additional_reward += 1*self.distance_history[0] - self.distance_history[-1]
+                additional_reward += 0.5*(self.distance_history[0] - self.distance_history[-1])
 
         if len(self.goal_vel_history) >= 5:
             # Calculate if goal velocity is consistently improving
             goal_vel_trend = sum(self.goal_vel_history[-1] - self.goal_vel_history[i] for i in range(-5, -1)) / 4
             if goal_vel_trend > 0.05:
-                #additional_reward += 0.4  # Larger reward for moving ball toward goal
+                #additional_reward += 0.2  # Larger reward for moving ball toward goal
                 self.time_since_touch = 0
             elif goal_vel_trend < -0.05:
-                #additional_reward -= 0.3  # Penalty for hitting the ball away from goal
+                #additional_reward += 0.01  # Penalty for hitting the ball away from goal
                 self.time_since_touch = 0
-            additional_reward += 4*goal_vel[0]
+
+        if goal_vel[0] > 0.1 and self.distance_history[0] < 5:
+            additional_reward += 1*goal_vel[0]
+            self.time_since_touch = 0
+        #elif goal_vel[0] < -0.1 and self.distance_history[0] < 5:
+            #additional_reward += 1*goal_vel[0]
 
         reward += additional_reward
 

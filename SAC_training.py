@@ -184,7 +184,7 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
 
 save_freq = 5 # frequency that the models are saved
 video_frequency = 500 # frequency at which to capture videos of the play
-load_model = True
+load_model = False
 episodes = 0
 tot_returns_tot = []
 reward_function1 = RewardFunction()

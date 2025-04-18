@@ -24,6 +24,28 @@ if is_ipython:
     from IPython import display
 
 
+tot_avg_losses = []
+
+
+def plot_avg_loss(show_result=False):
+    plt.figure(3)
+    plt.clf()
+    plt.title('Average Loss (Critic vs Actor)')
+    plt.xlabel('Episode')
+    plt.ylabel('Loss')
+
+    plt.plot(tot_avg_losses)
+    plt.legend(('critic1','critic2', 'actor', 'value'))
+    plt.pause(0.001)  # pause a bit so that plots are updated
+    if is_ipython:
+        if not show_result:
+            display.display(plt.gcf())
+            display.clear_output(wait=True)
+        else:
+            display.display(plt.gcf())
+
+
+
 def plot_avg_reward(show_result=False):
     plt.figure(2)
     rewards_t = torch.tensor(tot_returns_tot, dtype=torch.float)
@@ -59,25 +81,32 @@ time_since_touch = 0
 def extract_state(obs):
     state_vector = np.concatenate([
         np.array(obs['body_height']).flatten(),
+        np.array(obs['end_effectors_pos']).flatten(),
         np.array(obs['joints_pos']).flatten(),
         np.array(obs['joints_vel']).flatten(),
+        np.array(obs['prev_action']).flatten(),
         np.array(obs['sensors_accelerometer']).flatten(),
         np.array(obs['sensors_gyro']).flatten(),
         np.array(obs['sensors_velocimeter']).flatten(),
-        np.array(obs['prev_action']).flatten(),
         np.array(obs['ball_ego_position']).flatten(),
+        np.array(obs['world_zaxis']).flatten(),
         np.array(obs['ball_ego_linear_velocity']).flatten(),
         np.array(obs['ball_ego_angular_velocity']).flatten(),
-        #np.array(obs['teammate_0_ego_position']).flatten(),
-        #np.array(obs['teammate_0_ego_linear_velocity']).flatten(),
-        #np.array(obs['teammate_0_ego_orientation']).flatten(),
+        #np.array(obs['opponent_0_ego_end_effectors_pos']).flatten(),
         np.array(obs['opponent_0_ego_position']).flatten(),
-        np.array(obs['opponent_0_ego_linear_velocity']).flatten(),
-        np.array(obs['opponent_0_ego_orientation']).flatten(),
-        #np.array(obs['opponent_1_ego_position']).flatten(),
-        #np.array(obs['opponent_1_ego_linear_velocity']).flatten(),
-        #np.array(obs['opponent_1_ego_orientation']).flatten(),
+        #np.array(obs['opponent_0_ego_linear_velocity']).flatten(),
+        #np.array(obs['opponent_0_ego_orientation']).flatten(),
+        np.array(obs['team_goal_back_right']).flatten(),
+        np.array(obs['team_goal_mid']).flatten(),
+        np.array(obs['team_goal_front_left']).flatten(),
+        np.array(obs['field_front_left']).flatten(),
+        np.array(obs['opponent_goal_back_left']).flatten(),
+        np.array(obs['opponent_goal_mid']).flatten(),
+        np.array(obs['opponent_goal_front_right']).flatten(),
+        np.array(obs['field_back_right']).flatten(),
         np.array([obs['stats_vel_to_ball']]).flatten(),  # Single value stats
+        np.array([obs['stats_closest_vel_to_ball']]).flatten(),
+        np.array([obs['stats_veloc_forward']]).flatten(),
         np.array([obs['stats_vel_ball_to_goal']]).flatten(),
         np.array([obs['stats_home_avg_teammate_dist']]).flatten(),
         np.array([obs['stats_home_score']]).flatten(),
@@ -87,15 +116,15 @@ def extract_state(obs):
     return state_vector
 
 # file name that will hold the rewards as episodes continue
-reward_log_file = "rewards.csv"
+reward_log_file = "rewards_double.csv"
 
 # Initialize the soccer environment with random actions
 random_state = np.random.RandomState(42)
 env = dm_soccer.load(team_size=1,
-                     time_limit=10000.0,
+                     time_limit=100.0,
                      disable_walker_contacts=False,
                      enable_field_box=True,
-                     terminate_on_goal=True,
+                     terminate_on_goal=False,
                      walker_type=dm_soccer.WalkerType.BOXHEAD)
 env.reset()
 
@@ -104,8 +133,8 @@ action_specs = env.action_spec()
 timestep = env.reset()
 
 # setup the agents
-team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[1].shape[0], action_specs[0].maximum, "player", tau=0.01, reward_scale=1)
-team2_player1 = 0
+team1_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[1].shape[0], action_specs[0].maximum, "player_test3", tau=0.01, reward_scale=1)
+team2_player1 = Agent(extract_state(timestep.observation[0]).shape[0], action_specs[1].shape[0], action_specs[0].maximum, "player_testB", tau=0.01, reward_scale=1)
 
 
 players = [team1_player1, team2_player1]
@@ -114,7 +143,8 @@ players = [team1_player1, team2_player1]
 
 def episode(capture_video, out=None, frame_width=None, frame_height=None):
 
-    tot_rewards = [0,0,0,0]
+    tot_rewards = [0,0]
+    losses = [0,0,0,0]
     env.reset()
 
     # Retrieve action_specs for all players
@@ -134,26 +164,39 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
         for i in range(len(action_specs)):
             states.append(extract_state(timestep.observation[i]))
             #player 0 is the only learning agent other player is random
-            if i == 0:
-                action = team1_player1.choose_action(states[i])
+            if i == 1:
+                action = team2_player1.choose_action(states[i])
                 actions.append(action)
             else:
-                action = np.random.uniform(action_specs[i].minimum, action_specs[i].maximum, size=action_specs[i].shape)
+                action = team1_player1.choose_action(states[i])#action = np.random.uniform(action_specs[i].minimum, action_specs[i].maximum, size=action_specs[i].shape)
                 actions.append(action)
         
-        # Step through the environment with the random actions
-        timestep = env.step(actions)
+
+        # employ frame skipping
+        reward = [0,0]
+        for _ in range(4):
+            # Step through the environment with the random actions
+            timestep = env.step(actions)
+            for i in range(len(action_specs)):
+                reward_temp, _, scored, timeout = reward_functions[i].UpdateAndFetchReward(timestep, i)
+                reward[i] += reward_temp
+                done = timestep.last() or scored or timeout
+
+            if done:
+                break
+
 
         for i in range(len(action_specs)):
             # record the next state reward and done marker for each player and add to the players buffer
             next_state = extract_state(timestep.observation[i])
-            reward, _, scored, timeout = reward_functions[i].UpdateAndFetchReward(timestep, i)
-            done = timestep.last() or scored or timeout
             # add MDP tuple to the replay buffer
-            if i ==0:
-                team1_player1.remember(states[i], actions[i], reward, next_state, done)
-                team1_player1.learn()
-            tot_rewards[i] += reward
+            if i ==1:
+                team2_player1.remember(states[i], actions[i], reward[i], next_state, done)
+                losses = team2_player1.learn()
+            else:
+                team1_player1.remember(states[i], actions[i], reward[i], next_state, done)
+                losses = team1_player1.learn()
+            tot_rewards[i] += reward[i]
 
         if capture_video:
             # Capture a single camera view
@@ -175,10 +218,10 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
             # ---------------------------------------------------------------------------------------
             out.write(image)
             # ---------------------------------------------------------------------------------------
+    print(losses)
+    avg_losses = np.mean(losses, axis=0)
 
-    print(time_since_touch)
-
-    return tot_rewards
+    return tot_rewards, avg_losses
 
 
 ##############
@@ -186,8 +229,8 @@ def episode(capture_video, out=None, frame_width=None, frame_height=None):
 ##############
 
 save_freq = 5 # frequency that the models are saved
-video_frequency = 100 # frequency at which to capture videos of the play
-load_model = True
+video_frequency = 50 # frequency at which to capture videos of the play
+load_model = False
 episodes = 0
 tot_returns_tot = []
 reward_function1 = RewardFunction()
@@ -197,18 +240,20 @@ reward_functions = [reward_function1, reward_function2]
 if load_model:
     for i in range(len(action_specs)):
         team1_player1.load_models()
+        team2_player1.load_models()
 
 while True:
     env.reset()
     record_video = False
-    tot_returns = [0,0,0,0]
+    tot_returns = [0,0]
     print("Episode {} start".format(episodes))
     # save the models every so many episodes
     if episodes % save_freq == 0:
+        team2_player1.save_models()
         team1_player1.save_models()
 
     # record the run every so many episodes
-    if episodes % video_frequency == 2:
+    if episodes % video_frequency == 3:
         record_video = True
         # Video settings
         # ---------------------------------------------------------------------------------------
@@ -223,7 +268,8 @@ while True:
         out = cv2.VideoWriter(video_filename, fourcc, fps, (frame_width, frame_height))
         # ---------------------------------------------------------------------------------------
 
-        tot_returns = episode(record_video, out=out, frame_width=frame_width, frame_height=frame_height)
+        tot_returns, avg_losses = episode(record_video, out=out, frame_width=frame_width, frame_height=frame_height)
+        tot_avg_losses.append([avg_losses])
 
         # Release the video writer
         # ---------------------------------------------------------------------------------------
@@ -242,7 +288,8 @@ while True:
 
     else:
         # normal episode without video
-        tot_returns = episode(record_video)
+        tot_returns, avg_losses = episode(record_video)
+        tot_avg_losses.append(avg_losses)
 
     with open(reward_log_file, "a") as file:
         file.write(f"{tot_returns}\n")
@@ -251,5 +298,6 @@ while True:
     print(episodes, " complete\n")
     tot_returns_tot.append(tot_returns)
     plot_avg_reward()
+    #plot_avg_loss()
 
 
